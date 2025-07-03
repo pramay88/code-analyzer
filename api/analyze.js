@@ -1,14 +1,10 @@
-// File: /api/analyze.js
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Only POST method is allowed' });
   }
 
   const { code } = req.body;
-
-  if (!code) {
-    return res.status(400).json({ error: 'No code provided' });
-  }
+  if (!code) return res.status(400).json({ error: 'No code provided' });
 
   const prompt = `
 Analyze the following code and provide:
@@ -26,31 +22,29 @@ ${code}
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: prompt }],
-            },
-          ],
+          contents: [{ parts: [{ text: prompt }] }],
         }),
       }
     );
 
     const data = await response.json();
 
-    if (data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-      return res.status(200).json({ result: data.candidates[0].content.parts[0].text });
-    } else {
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!reply) {
+      console.error('Gemini Raw Response:', JSON.stringify(data, null, 2));
       return res.status(500).json({ result: 'No valid response from Gemini' });
     }
-  } catch (err) {
-    return res.status(500).json({ error: 'Gemini API call failed', details: err.message });
+
+    return res.status(200).json({ result: reply });
+  } catch (error) {
+    console.error('Gemini Error:', error);
+    return res.status(500).json({ error: 'Failed to fetch from Gemini', details: error.message });
   }
 }
