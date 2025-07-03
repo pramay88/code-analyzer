@@ -4,10 +4,13 @@ export default async function handler(req, res) {
   }
 
   const { code } = req.body;
-  if (!code) return res.status(400).json({ error: 'No code provided' });
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-  const prompt = `
-Analyze the following code and provide:
+  if (!code || !GEMINI_API_KEY) {
+    return res.status(400).json({ error: 'Code or API key missing' });
+  }
+
+  const prompt = `Analyze the following code and provide:
 1. Time Complexity
 2. Space Complexity
 3. A short justification for both.
@@ -15,36 +18,31 @@ Analyze the following code and provide:
 Code:
 \`\`\`
 ${code}
-\`\`\`
-`;
-
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+\`\`\``;
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2 },
         }),
       }
     );
 
     const data = await response.json();
-
     const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
     if (!reply) {
-      console.error('Gemini Raw Response:', JSON.stringify(data, null, 2));
       return res.status(500).json({ result: 'No valid response from Gemini' });
     }
 
     return res.status(200).json({ result: reply });
-  } catch (error) {
-    console.error('Gemini Error:', error);
-    return res.status(500).json({ error: 'Failed to fetch from Gemini', details: error.message });
+  } catch (err) {
+    console.error('Gemini API Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
