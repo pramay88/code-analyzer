@@ -13,7 +13,6 @@ export default async function handler(req, res) {
   const prompt = `Analyze the following code and provide:
 1. Time Complexity
 2. Space Complexity
-3. A short justification for both.
 
 Code:
 \`\`\`
@@ -34,13 +33,22 @@ ${code}
     );
 
     const data = await response.json();
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const fullReply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    if (!reply) {
+    if (!fullReply) {
       return res.status(500).json({ result: 'No valid response from Gemini' });
     }
 
-    return res.status(200).json({ result: reply });
+    // Extract just Time and Space complexity lines
+    const timeMatch = fullReply.match(/Time Complexity:.*?(O\([^)]+\))/i);
+    const spaceMatch = fullReply.match(/Space Complexity:.*?(O\([^)]+\))/i);
+
+    const time = timeMatch ? timeMatch[1] : 'Not found';
+    const space = spaceMatch ? spaceMatch[1] : 'Not found';
+
+    const compact = `Time Complexity: ${time}\nSpace Complexity: ${space}`;
+
+    return res.status(200).json({ result: compact });
   } catch (err) {
     console.error('Gemini API Error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
