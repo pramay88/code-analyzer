@@ -137,10 +137,12 @@ ${code}
 \`\`\``;
 
       const completion = await openai.chat.completions.create({
-        model: 'openai/gpt-4o',
-        messages: [{ role: 'user', content: openRouterPrompt }],
-        temperature: 0.2,
-      });
+  model: 'openai/gpt-4o',
+  messages: [{ role: 'user', content: openRouterPrompt }],
+  temperature: 0.2,
+  max_tokens: 1000, // ✅ Reduce from 16384 to fit free quota
+});
+
 
       if (debugMode) console.log('📬 OpenRouter raw response:', completion);
 
