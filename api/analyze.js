@@ -22,6 +22,48 @@ function localFallbackAnalyzer(code) {
   return `Time Complexity: ${time}\nSpace Complexity: ${space}`;
 }
 
+async function openRouterLLMFallback(code) {
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  if (!OPENROUTER_API_KEY) return null;
+
+  const prompt = `Just extract the Time and Space Complexity in format:
+Time Complexity: O(...)
+Space Complexity: O(...)
+Code:
+\`\`\`
+${code}
+\`\`\``;
+
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'mistral', // or 'deepseek-coder'
+      messages: [
+        { role: 'system', content: 'You are a code complexity analyzer.' },
+        { role: 'user', content: prompt }
+      ],
+    }),
+  });
+
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content;
+
+  if (!response.ok || !text || !text.includes('Time Complexity')) {
+    console.warn('🧩 OpenRouter failed or gave unexpected output:', text);
+    return null;
+  }
+
+  return {
+    result: text.trim(),
+    success: true,
+    source: 'openrouter'
+  };
+}
+
 export default async function handler(req, res) {
   try {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -33,31 +75,26 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: 'Only POST method is allowed' });
     }
 
-    console.log('📥 Request body:', req.body);
     const { code } = req.body;
 
     if (!code || typeof code !== 'string' || code.trim().length === 0) {
-      return res.status(400).json({
-        error: 'Invalid code input',
-        received: code
-      });
+      return res.status(400).json({ error: 'Invalid code input', received: code });
     }
 
-    console.log('✅ Valid code received, length:', code.length);
-
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
     if (!GEMINI_API_KEY) {
-      console.warn('⚠️ No Gemini API key. Using fallback.');
       const fallbackResult = localFallbackAnalyzer(code);
       return res.status(200).json({
         result: fallbackResult,
         success: false,
         source: 'fallback',
-        reason: 'Missing API key'
+        reason: 'Missing Gemini API key'
       });
     }
 
-    const prompt = `Just extract the Time and Space Complexity in format:
+    // ====== Call Gemini ======
+    const geminiPrompt = `Just extract the Time and Space Complexity in format:
 Time Complexity: O(...)
 Space Complexity: O(...)
 Code:
@@ -65,55 +102,46 @@ Code:
 ${code}
 \`\`\``;
 
-    console.log('🚀 Calling Gemini API...');
-    const response = await fetch(
+    const geminiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
+          contents: [{ parts: [{ text: geminiPrompt }] }],
           generationConfig: { temperature: 0.2 },
         }),
       }
     );
 
-    console.log('📡 Gemini API response status:', response.status);
+    const geminiData = await geminiResponse.json();
+    const geminiText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.warn('❌ Gemini API failed. Falling back.', errorText);
-      const fallbackResult = localFallbackAnalyzer(code);
+    if (geminiResponse.ok && geminiText.includes('Time Complexity')) {
       return res.status(200).json({
-        result: fallbackResult,
-        success: false,
-        source: 'fallback',
-        reason: 'Gemini API failed',
-        geminiError: errorText
+        result: geminiText.trim(),
+        success: true,
+        source: 'gemini'
       });
     }
 
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.warn('⚠️ Gemini failed. Trying OpenRouter...');
 
-    if (!text || !text.includes('Time Complexity')) {
-      console.warn('⚠️ Invalid Gemini response. Using fallback.', text);
-      const fallbackResult = localFallbackAnalyzer(code);
-      return res.status(200).json({
-        result: fallbackResult,
-        success: false,
-        source: 'fallback',
-        reason: 'Invalid Gemini response',
-        geminiResponse: data
-      });
+    // ====== Call OpenRouter as fallback ======
+    const openrouterResult = await openRouterLLMFallback(code);
+    if (openrouterResult) {
+      return res.status(200).json(openrouterResult);
     }
 
-    console.log('✅ Gemini Success:', text.trim());
+    console.warn('⚠️ OpenRouter also failed. Using static fallback.');
 
+    // ====== Final Fallback: Static Analyzer ======
+    const fallbackResult = localFallbackAnalyzer(code);
     return res.status(200).json({
-      result: text.trim(),
-      success: true,
-      source: 'gemini'
+      result: fallbackResult,
+      success: false,
+      source: 'fallback',
+      reason: 'Both Gemini and OpenRouter failed'
     });
 
   } catch (err) {
