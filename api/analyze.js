@@ -1,13 +1,6 @@
 import OpenAI from 'openai';
 
-const openai = new OpenAI({
-  baseURL: 'https://openrouter.ai/api/v1',
-  apiKey: process.env.OPENROUTER_API_KEY,
-  defaultHeaders: {
-    'HTTP-Referer': 'https://your-site-url.com', // Optional but recommended
-    'X-Title': 'Code Complexity Analyzer',
-  },
-});
+const debugMode = true; // Set false to disable debug logs and debug info in response
 
 function localFallbackAnalyzer(code) {
   const codeLower = code.toLowerCase();
@@ -17,15 +10,12 @@ function localFallbackAnalyzer(code) {
   if (/for\s*\(.+;.+;.+\)/g.test(code) || /while\s*\(.+\)/g.test(code)) {
     time = 'O(n)';
   }
-
   if (/for\s*\(.+\)\s*{[^}]*for\s*\(.+\)/gs.test(code)) {
     time = 'O(n^2)';
   }
-
   if (/merge|quick|sort|binary|log/i.test(codeLower)) {
     time = 'O(n log n)';
   }
-
   if (/recursion|fibonacci|factorial|dp|memo/i.test(codeLower)) {
     time = 'O(2^n)';
   }
@@ -33,46 +23,11 @@ function localFallbackAnalyzer(code) {
   return `Time Complexity: ${time}\nSpace Complexity: ${space}`;
 }
 
-async function openRouterLLMFallback(code) {
-  try {
-    const prompt = `Just extract the Time and Space Complexity in format:
-Time Complexity: O(...)
-Space Complexity: O(...)
-Code:
-\`\`\`
-${code}
-\`\`\``;
-
-    const completion = await openai.chat.completions.create({
-      model: 'mistral', // Or try 'deepseek-coder', 'meta-llama/llama-3-8b-instruct'
-      messages: [
-        { role: 'system', content: 'You are a code complexity analyzer.' },
-        { role: 'user', content: prompt }
-      ]
-    });
-
-    const text = completion?.choices?.[0]?.message?.content;
-
-    if (!text || !text.includes('Time Complexity')) {
-      return null;
-    }
-
-    return {
-      result: text.trim(),
-      success: true,
-      source: 'openrouter'
-    };
-  } catch (err) {
-    console.error('❌ OpenRouter error:', err.message);
-    return null;
-  }
-}
-
 export default async function handler(req, res) {
+  // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Only POST method is allowed' });
@@ -81,14 +36,29 @@ export default async function handler(req, res) {
   const { code } = req.body;
 
   if (!code || typeof code !== 'string' || code.trim().length === 0) {
-    return res.status(400).json({ error: 'Invalid code input', received: code });
+    return res.status(400).json({ error: 'Invalid code input' });
   }
 
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  if (debugMode) console.log('✅ Valid code received, length:', code.length);
 
-  // --- Gemini Primary API Call ---
-  try {
-    if (GEMINI_API_KEY) {
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+
+  let debugInfo = {
+    geminiKeyPresent: !!GEMINI_API_KEY,
+    openrouterKeyPresent: !!OPENROUTER_API_KEY,
+    geminiCalled: false,
+    geminiSuccess: false,
+    geminiError: null,
+    openrouterCalled: false,
+    openrouterSuccess: false,
+    openrouterError: null,
+  };
+
+  // === Try Gemini API ===
+  if (GEMINI_API_KEY) {
+    try {
+      debugInfo.geminiCalled = true;
       const prompt = `Just extract the Time and Space Complexity in format:
 Time Complexity: O(...)
 Space Complexity: O(...)
@@ -97,7 +67,9 @@ Code:
 ${code}
 \`\`\``;
 
-      const geminiRes = await fetch(
+      if (debugMode) console.log('🚀 Calling Gemini API...');
+
+      const geminiResponse = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: 'POST',
@@ -109,37 +81,102 @@ ${code}
         }
       );
 
-      const geminiData = await geminiRes.json();
-      const geminiText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (debugMode) console.log('📡 Gemini API status:', geminiResponse.status);
 
-      if (geminiRes.ok && geminiText.includes('Time Complexity')) {
-        return res.status(200).json({
-          result: geminiText.trim(),
-          success: true,
-          source: 'gemini'
-        });
+      if (!geminiResponse.ok) {
+        const errText = await geminiResponse.text();
+        debugInfo.geminiError = `Status ${geminiResponse.status}: ${errText}`;
+        if (debugMode) console.warn('❌ Gemini API failed:', debugInfo.geminiError);
+      } else {
+        const data = await geminiResponse.json();
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+        if (text && text.includes('Time Complexity')) {
+          debugInfo.geminiSuccess = true;
+          if (debugMode) console.log('✅ Gemini Success:', text.trim());
+          return res.status(200).json({
+            result: text.trim(),
+            success: true,
+            source: 'gemini',
+            debugInfo: debugMode ? debugInfo : undefined,
+          });
+        } else {
+          debugInfo.geminiError = `Invalid Gemini response text: ${text}`;
+          if (debugMode) console.warn('⚠️ Invalid Gemini response:', text);
+        }
       }
-
-      console.warn('⚠️ Gemini fallback triggered:', geminiData);
-    } else {
-      console.warn('⚠️ GEMINI_API_KEY not set. Skipping Gemini.');
+    } catch (e) {
+      debugInfo.geminiError = e.message || String(e);
+      if (debugMode) console.error('💥 Gemini Exception:', e);
     }
-  } catch (err) {
-    console.error('❌ Gemini API Error:', err.message);
+  } else {
+    if (debugMode) console.warn('⚠️ No Gemini API key provided');
   }
 
-  // --- OpenRouter Fallback ---
-  const openrouterResult = await openRouterLLMFallback(code);
-  if (openrouterResult) {
-    return res.status(200).json(openrouterResult);
+  // === Try OpenRouter API ===
+  if (OPENROUTER_API_KEY) {
+    try {
+      debugInfo.openrouterCalled = true;
+      if (debugMode) console.log('🚨 Calling OpenRouter API...');
+
+      const openai = new OpenAI({
+        baseURL: 'https://openrouter.ai/api/v1',
+        apiKey: OPENROUTER_API_KEY,
+        defaultHeaders: {
+          'HTTP-Referer': 'https://your-site-url.com', // Change this to your deployed site URL if needed
+          'X-Title': 'Code Analyzer Extension',
+        },
+      });
+
+      const openRouterPrompt = `Just extract the Time and Space Complexity in format:
+Time Complexity: O(...)
+Space Complexity: O(...)
+Code:
+\`\`\`
+${code}
+\`\`\``;
+
+      const completion = await openai.chat.completions.create({
+        model: 'openai/gpt-4o',
+        messages: [{ role: 'user', content: openRouterPrompt }],
+        temperature: 0.2,
+      });
+
+      if (debugMode) console.log('📬 OpenRouter raw response:', completion);
+
+      const text = completion?.choices?.[0]?.message?.content;
+
+      if (text && text.includes('Time Complexity')) {
+        debugInfo.openrouterSuccess = true;
+        if (debugMode) console.log('✅ OpenRouter Success:', text.trim());
+        return res.status(200).json({
+          result: text.trim(),
+          success: true,
+          source: 'openrouter',
+          debugInfo: debugMode ? debugInfo : undefined,
+        });
+      } else {
+        debugInfo.openrouterError = `Invalid OpenRouter response text: ${text}`;
+        if (debugMode) console.warn('⚠️ Invalid OpenRouter response:', text);
+      }
+    } catch (e) {
+      debugInfo.openrouterError = e.message || String(e);
+      if (debugMode) console.error('💥 OpenRouter Exception:', e);
+    }
+  } else {
+    if (debugMode) console.warn('⚠️ No OpenRouter API key provided');
   }
 
-  // --- Static Analyzer (Final Fallback) ---
+  // === Both APIs failed, return fallback ===
   const fallbackResult = localFallbackAnalyzer(code);
+
+  if (debugMode) console.log('🔄 Returning fallback result');
+
   return res.status(200).json({
     result: fallbackResult,
     success: false,
     source: 'fallback',
-    reason: 'Both Gemini and OpenRouter failed'
+    reason: 'Both Gemini and OpenRouter failed',
+    debugInfo: debugMode ? debugInfo : undefined,
   });
 }
