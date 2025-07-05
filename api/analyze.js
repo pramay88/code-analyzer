@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 
-const debugMode = true; // Set false to disable debug logs and debug info in response
+const debugMode = process.env.debugmode === 'true';
+ // Set false to disable debug logs and debug info in response
 
 function localFallbackAnalyzer(code) {
   const codeLower = code.toLowerCase();
